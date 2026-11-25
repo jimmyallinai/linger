@@ -220,7 +220,7 @@ export async function bundleDocumentImages<T extends DocumentFileSnapshot>(
   const tree = parse(snapshot);
   const nodes = images(tree);
   const sources = new Map<string, Promise<Map<string, string>>>();
-  const locals = new Map<string, Promise<string>>();
+  const locals = new Map<string, Promise<string | null>>();
   let changed = false;
   let totalBytes = snapshot.content.length;
   let expandedBytes = snapshot.content.length;
@@ -272,15 +272,11 @@ export async function bundleDocumentImages<T extends DocumentFileSnapshot>(
       const uri = (await available).get(match[1]!);
       if (!uri) throw invalid();
       replaceImage(node, uri);
-    } else if (!/^(?:[a-z][a-z0-9+.-]*:|\/|#)/iu.test(node.url)) {
-      const local = decodeURIComponent(node.url);
-      if (
-        local.includes("\\") ||
-        local.includes("\0") ||
-        local.includes("?") ||
-        local.includes("#")
-      )
-        throw invalid();
+    } else if (!/^(?:[a-z][a-z0-9+.-]*:|\/)/iu.test(node.url)) {
+      // Local references are literal file names, so characters such as %, ? and #
+      // are read as written instead of decoded or treated as a fragment.
+      const local = node.url;
+      if (local.includes("\\") || local.includes("\0")) throw invalid();
       const filePath =
         "./" +
         path.posix.normalize(
@@ -296,13 +292,23 @@ export async function bundleDocumentImages<T extends DocumentFileSnapshot>(
       const safePath = playgroundFilePathSchema.parse(filePath);
       let uri = locals.get(safePath);
       if (!uri) {
-        uri = read(safePath).then(
-          (image) =>
-            `data:${imageType(image.content)};base64,${Buffer.from(image.content).toString("base64")}`,
-        );
+        uri = (async () => {
+          let image;
+          try {
+            image = await read(safePath);
+          } catch (error) {
+            // A # reference names a page fragment unless a file with that
+            // literal name sits beside the document.
+            if (signal.aborted) throw error;
+            if (local.startsWith("#")) return null;
+            throw error;
+          }
+          return `data:${imageType(image.content)};base64,${Buffer.from(image.content).toString("base64")}`;
+        })();
         locals.set(safePath, uri);
       }
-      replaceImage(node, await uri);
+      const resolved = await uri;
+      if (resolved) replaceImage(node, resolved);
     }
   });
   if (!changed) return snapshot;

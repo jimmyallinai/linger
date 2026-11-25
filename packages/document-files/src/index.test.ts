@@ -170,3 +170,83 @@ it("bounds parallel image reads, deduplicates sources, and waits for in-flight r
   ).rejects.toThrow("read failed");
   expect(active).toBe(0);
 });
+
+it.each([
+  "Sprint 12.md",
+  "Sprint #12.md",
+  "Progress 50%.md",
+  "#12.md",
+  "What?.md",
+])("restores image bytes for a working copy named %s", async (fileName) => {
+  const snapshot = {
+    filePath: fileName,
+    content: Buffer.from("![Chart](data:image/gif;base64,R0lGODlh)\n"),
+    sizeBytes: 0,
+    sha256: "",
+  };
+  const result = extractDocumentImages(snapshot);
+  expect(result.files.size).toBe(1);
+  const bundled = await bundleDocumentImages(
+    { ...snapshot, content: result.content },
+    async (filePath) => {
+      const content = result.files.get(filePath.slice(13));
+      if (!content) throw new Error(`missing file: ${filePath}`);
+      return {
+        filePath,
+        content,
+        sizeBytes: content.length,
+        sha256: "",
+      };
+    },
+    new AbortController().signal,
+  );
+  expect(Buffer.from(bundled.content).toString()).toContain(
+    "data:image/gif;base64,R0lGODlh",
+  );
+});
+
+it("leaves a page fragment alone but still rejects absolute paths and playground escapes", async () => {
+  const reads: string[] = [];
+  const read = async (filePath: string) => {
+    reads.push(filePath);
+    throw new Error(`missing file: ${filePath}`);
+  };
+  const fragment = await bundleDocumentImages(
+    {
+      filePath: "report.md",
+      content: Buffer.from("![Chart](#section)\n"),
+      sizeBytes: 0,
+      sha256: "",
+    },
+    read,
+    new AbortController().signal,
+  );
+  expect(Buffer.from(fragment.content).toString()).toContain(
+    "![Chart](#section)",
+  );
+  await expect(
+    bundleDocumentImages(
+      {
+        filePath: "report.md",
+        content: Buffer.from("![a](../../secret.png)\n"),
+        sizeBytes: 0,
+        sha256: "",
+      },
+      read,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    bundleDocumentImages(
+      {
+        filePath: "report.md",
+        content: Buffer.from("![a](/secret.png)\n"),
+        sizeBytes: 0,
+        sha256: "",
+      },
+      read,
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow();
+  expect(reads).toEqual(["./playground/#section"]);
+});
