@@ -273,9 +273,15 @@ export async function bundleDocumentImages<T extends DocumentFileSnapshot>(
       if (!uri) throw invalid();
       replaceImage(node, uri);
     } else if (!/^(?:[a-z][a-z0-9+.-]*:|\/)/iu.test(node.url)) {
-      // Local references are literal file names, so characters such as %, ? and #
-      // are read as written instead of decoded or treated as a fragment.
-      const local = node.url;
+      // Local references are file names, so percent-encoding is decoded
+      // when it is valid (`my%20photo.png` names `my photo.png`). A lone
+      // `%` is not valid encoding, so the name is read as written instead.
+      let local: string;
+      try {
+        local = decodeURIComponent(node.url);
+      } catch {
+        local = node.url;
+      }
       if (local.includes("\\") || local.includes("\0")) throw invalid();
       const filePath =
         "./" +
@@ -298,8 +304,11 @@ export async function bundleDocumentImages<T extends DocumentFileSnapshot>(
             image = await read(safePath);
           } catch (error) {
             // A # reference names a page fragment unless a file with that
-            // literal name sits beside the document.
+            // literal name sits beside the document. Only a missing file is
+            // forgiven here: any other failure (for example the size
+            // budget) still fails the send.
             if (signal.aborted) throw error;
+            if (error instanceof DocumentImageError) throw error;
             if (local.startsWith("#")) return null;
             throw error;
           }

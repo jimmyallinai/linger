@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import {
+  DocumentImageError,
   extractDocumentImages,
   bundleDocumentImages,
   prepareDocumentSource,
@@ -249,4 +250,74 @@ it("leaves a page fragment alone but still rejects absolute paths and playground
     ),
   ).rejects.toThrow();
   expect(reads).toEqual(["./playground/#section"]);
+});
+
+it("decodes a percent-encoded local reference to the file it names", async () => {
+  const bundled = await bundleDocumentImages(
+    {
+      filePath: "report.md",
+      content: Buffer.from("![a](my%20photo.png)\n"),
+      sizeBytes: 0,
+      sha256: "",
+    },
+    async (filePath) => {
+      if (filePath !== "./playground/my photo.png")
+        throw new Error(`missing file: ${filePath}`);
+      return {
+        filePath,
+        content: Buffer.from("GIF89a"),
+        sizeBytes: 6,
+        sha256: "",
+      };
+    },
+    new AbortController().signal,
+  );
+  expect(Buffer.from(bundled.content).toString()).toContain(
+    "data:image/gif;base64,R0lGODlh",
+  );
+});
+
+it("reads a lone-% file name as written when it is not valid encoding", async () => {
+  const bundled = await bundleDocumentImages(
+    {
+      filePath: "report.md",
+      content: Buffer.from("![a](50%.png)\n"),
+      sizeBytes: 0,
+      sha256: "",
+    },
+    async (filePath) => {
+      if (filePath !== "./playground/50%.png")
+        throw new Error(`missing file: ${filePath}`);
+      return {
+        filePath,
+        content: Buffer.from("GIF89a"),
+        sizeBytes: 6,
+        sha256: "",
+      };
+    },
+    new AbortController().signal,
+  );
+  expect(Buffer.from(bundled.content).toString()).toContain(
+    "data:image/gif;base64,R0lGODlh",
+  );
+});
+
+it("does not swallow a failed read for a # file", async () => {
+  await expect(
+    bundleDocumentImages(
+      {
+        filePath: "report.md",
+        content: Buffer.from("![a](#big.png)\n"),
+        sizeBytes: 0,
+        sha256: "",
+      },
+      async () => {
+        throw new DocumentImageError(
+          "invalid_document_images",
+          "oversized document image source",
+        );
+      },
+      new AbortController().signal,
+    ),
+  ).rejects.toMatchObject({ code: "invalid_document_images" });
 });
